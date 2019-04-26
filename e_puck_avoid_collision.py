@@ -2,8 +2,13 @@
 
 # You may need to import some classes of the controller module. Ex:
 #  from controller import Robot, LED, DistanceSensor
-from controller import Robot, DistanceSensor, Motor
+from controller import Robot, DistanceSensor, Motor, Display
 import numpy as np
+from matplotlib import pyplot as plt
+plt.rcParams['axes.labelsize'] = 16
+plt.rcParams['axes.titlesize'] = 18
+plt.rcParams['xtick.labelsize'] = 14
+plt.rcParams['ytick.labelsize'] = 14
 
 # TIME_STEP = 16
 MAX_SPEED = 6.28
@@ -13,8 +18,8 @@ CELL_SIZE = 0.01
 RADIUS = 3.6 # cm
 MAX_VISION = 7
 GRID = None
-
-
+MAP_RANGE = [0,500]
+MAX_CHARGE = 127
 # Distance Map
 DISTANCE = [
           [0, 4095],
@@ -29,8 +34,8 @@ DISTANCE = [
 # MAP = {"
 
 def init_grid(X,Y,C):
-    map_range = [0,500]
-    mid_range = (map_range[1] - map_range[0]) // 2
+    
+    mid_range = (MAP_RANGE[1] - MAP_RANGE[0]) // 2
     
     # Initializing grid to middle of map range
     grid = np.zeros(shape=[int(X/C),int(Y/C)], dtype = int)
@@ -57,9 +62,12 @@ def clip(x, y_axis=False):
 
 def update_map(x,y, sensor_val, quadrant=0):
     
+    x += 50
+    y += 50
+    
     if quadrant == 0:
       x_min, x_max = x, clip(x + MAX_VISION)
-      y_min, y_max = y, cliP(y + MAX_VISION)
+      y_min, y_max = y, clip(y + MAX_VISION)
     
     for i in range(x_min, x_max):
         for j in range(y_min,y_max):
@@ -67,13 +75,54 @@ def update_map(x,y, sensor_val, quadrant=0):
             # If not under robot AND less than MAX_VISION distance away
             dist_from_robot = (i-x)**2 + (j - y)**2
             
-            if dist_from_robot > r and dist_from_robot < d :
-                GRID[i,j] += 1
+            if dist_from_robot > RADIUS and dist_from_robot < MAX_VISION :
+                GRID[i,j] += 10
+                # print("FREESPACE:{},{}".format(i,j))
 
 
+def print_map(name="potential_map.png", iter=1):
+    fig = plt.figure(figsize=(20,20))
+    plt.imshow(GRID, cmap="gray", 
+               vmin= MAP_RANGE[0], vmax= MAP_RANGE[1])
+    plt.colorbar()
+    plt.title("Potential Map")
+    plt.savefig("figures_1"+"/"+name)
+
+
+def calculate_potential(robot_pos):
+    F = 0 # Approximating the electrostatic Force
+    robot_pos = np.array(robot_pos)
+    
+    for x in range(GRID.shape[0]):
+        for y in range(GRID.shape[1]):
+            q = MAX_CHARGE #V[x,y]
+            dist_from_robot = (robot_pos[0]-x)**2 + (robot_pos[1] - y)**2
+            
+            if dist_from_robot > RADIUS:
+                r = robot_pos - [x,y]
+                mag = np.power(np.linalg.norm(r),2)
+                F += (q/mag * r)
+    return F
+    
+# def calculate_step():
+    # V = np.abs(GRID_0 - GRID)
+    # V
+    
+    
+def calculate_angle(F):
+    return np.arctan(-F[1]/F[0])
+    
 
 # create the Robot instance.
 robot = Robot()
+
+
+#GETS THE DISPLAY WORKS!
+# disp = robot.getDisplay("display")
+# print("DISP WIDTH")
+# print(disp.getWidth())
+# disp.setColor(0xFF0FFF)
+# disp.drawRectangle()
 
 # get the time step of the current world.
 timestep = int(robot.getBasicTimeStep())
@@ -82,6 +131,9 @@ print("Timestep:",timestep)
 
 # Init grid
 GRID = init_grid(MAP_X, MAP_Y, CELL_SIZE)
+
+# Saving copy of initial grid
+GRID_0 = GRID.copy()
 
 # Have to enable each distance sensor
 sensors = []
@@ -107,6 +159,7 @@ leftMotor.setVelocity(0.0)
 rightMotor.setVelocity(0.0)
 
 receiver.enable(timestep)
+x_pos, y_pos = [0,0]
 
 
 print(sensors[0].getMinValue())
@@ -131,13 +184,31 @@ while robot.step(timestep) != -1:
         print("Current Position: " + message)
         receiver.nextPacket()   
     
+        x_pos,y_pos = [int(float(x)*100) for x in message.split(",")]
+        print(x_pos,y_pos)
+        
+        ## Update Grid
+        update_map(x= x_pos,
+                   y= y_pos,
+                   sensor_val=psValues[0])
+        
+        
+        ## Calculate the potential force
+        F = calculate_potential(robot_pos=[x_pos,y_pos])
+        
+        theta = calculate_angle(F)
+        
+        print("Angle of force: {:.5f}".format(theta))
+        
     # Processing sensor data here
     # detect obstacles
     right_obstacle = psValues[0] > 70.0 or psValues[1] > 70.0 or psValues[2] > 70.0
     
     print("Distance: {}".format(convert_to_distance(psValues[0])))
      
-    ## Update Grid 
+
+    
+    print(GRID[x_pos+2,y_pos])
     
     left_obstacle = psValues[5] > 70.0 or psValues[6] > 70.0 or psValues[7] > 70.0
     
@@ -154,8 +225,10 @@ while robot.step(timestep) != -1:
         leftSpeed  -= 0.5 * MAX_SPEED
         rightSpeed += 0.5 * MAX_SPEED
     # write actuators inputs
-    leftMotor.setVelocity(leftSpeed)
-    rightMotor.setVelocity(rightSpeed)
+    leftMotor.setVelocity(0)
+    rightMotor.setVelocity(0)
+    
+    print_map()
 
 # Enter here exit cleanup code.
 del robot
