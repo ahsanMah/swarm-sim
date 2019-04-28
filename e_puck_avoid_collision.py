@@ -135,6 +135,31 @@ def calculate_speed(angle):
 
     return rightSpeed, leftSpeed
 
+def parse_message(message):
+
+    message = message.split(",")
+    print("{id}: {msg}".format(id=ID, msg=message))
+    data = []
+    supervisor = False
+
+    if message[0] == "SUPERVISOR":
+        data = [float(x) for x in message[1:]]
+        x_pos,y_pos = [int(x*100) for x in data[:2]]
+        x_pos += GRID.shape[0]/2
+        y_pos += GRID.shape[1]/2
+        orientation = data[-1]
+        data = [x_pos,y_pos,orientation]
+        supervisor = True
+    else:
+        # List of cells that were visited by other robot
+        data = [int(x) for x in message[1:]] 
+    
+    return data, supervisor
+
+    
+
+
+
 # create the Robot instance.
 robot = Robot()
 
@@ -176,6 +201,7 @@ for i in range(8):
 leftMotor = robot.getMotor('left wheel motor')
 rightMotor = robot.getMotor('right wheel motor')
 receiver = robot.getReceiver('receiver')
+emitter = robot.getEmitter("emitter")
 
 #Initializing motors
 leftMotor.setPosition(float('inf'))
@@ -185,6 +211,9 @@ rightMotor.setVelocity(0.0)
 rightSpeed, leftSpeed = MAX_SPEED, MAX_SPEED
 
 receiver.enable(timestep)
+print(robot.getName())
+ID = int(robot.getName().split("_")[1])
+receiver.setChannel(ID)
 x_pos, y_pos = [0,0]
 
 
@@ -202,31 +231,29 @@ while robot.step(timestep) != -1:
             sensors[i].getValue()
             ))
     
-     # Read position sent by supervisor.
+     # Read data sent by other robot entities
     if receiver.getQueueLength() > 0:
         message = receiver.getData().decode('utf-8')
         receiver.nextPacket()   
         
-        message = [float(x) for x in message.split(",")]
-        x_pos,y_pos = [int(x*100) for x in message[:2]]
-        x_pos += GRID.shape[0]/2
-        y_pos += GRID.shape[1]/2
+        data, supervisor = parse_message(message)
 
-        orientation = message[2]
-        print("Position:{},{} Orientation: {:.4f}".format(x_pos,y_pos, orientation))
+        # Supervisor only sends position coordinates
+        if supervisor:
+            x_pos,y_pos,orientation = data
+            print("Position:{},{} Orientation: {:.4f}".format(x_pos,y_pos, orientation))
         
-        ## Update Grid
-        update_map(x= x_pos,
-                   y= y_pos,
-                   sensor_val=psValues[0])
-        
+            ## Update Grid
+            update_map(x= x_pos,
+                    y= y_pos,
+                    sensor_val=psValues[0])
+                
         
         ## Calculate the potential force
+        # TODO: If first packet received is not from robot, xpo and ypos are incorrect
         F = calculate_potential(robot_pos=[x_pos,y_pos])
-        print("Force",F)
         theta = calculate_angle(F, orientation)
-        
-        print("Turning Angle: {:.5f}".format(theta))
+        print("Force: {}, Theta: {:.5f}".format(F,theta))
 
         # Modify speeds according to potentials
         rightSpeed, leftSpeed = calculate_speed(theta)
