@@ -62,56 +62,78 @@ def clip(x, y_axis=False):
 
 def update_map(x,y, sensor_val, quadrant=0):
     
-    x += 50
-    y += 50
+    # x += 50
+    # y += 50
     
     if quadrant == 0:
       x_min, x_max = x, clip(x + MAX_VISION)
-      y_min, y_max = y, clip(y + MAX_VISION)
+      y_min, y_max = clip(y - MAX_VISION), y
     
     for i in range(x_min, x_max):
         for j in range(y_min,y_max):
             
-            # If not under robot AND less than MAX_VISION distance away
+            # If not under robot AND less than observed sensor distance away
             dist_from_robot = (i-x)**2 + (j - y)**2
             
-            if dist_from_robot > RADIUS and dist_from_robot < MAX_VISION :
+            under_robot = dist_from_robot < RADIUS
+            free_space = dist_from_robot < sensor_val 
+
+            if not under_robot and free_space :
                 GRID[i,j] += 10
                 # print("FREESPACE:{},{}".format(i,j))
 
 
-def print_map(name="potential_map.png", iter=1):
+def print_map(name="potential_map.png", snapshot=1):
     fig = plt.figure(figsize=(20,20))
     plt.imshow(GRID, cmap="gray", 
                vmin= MAP_RANGE[0], vmax= MAP_RANGE[1])
     plt.colorbar()
     plt.title("Potential Map")
-    plt.savefig("figures_1"+"/"+name)
+    plt.savefig("figures_1/{snapshot}_{name}".format(name=name, snapshot=snapshot))
+    plt.close()
 
 
 def calculate_potential(robot_pos):
     F = 0 # Approximating the electrostatic Force
     robot_pos = np.array(robot_pos)
-    
-    for x in range(GRID.shape[0]):
-        for y in range(GRID.shape[1]):
+    r_x, r_y = robot_pos
+
+    x_min, x_max = clip(r_x - MAX_VISION), clip(r_x + MAX_VISION)
+    y_min, y_max = clip(r_y - MAX_VISION, y_axis=True), clip(r_y + MAX_VISION, y_axis=True)
+
+    # print("xmin,xmax: ", x_min,x_max)
+    # print(y_min, y_max)
+
+    for x in range(x_min, x_max):
+        for y in range(y_min, y_max):
             q = MAX_CHARGE #V[x,y]
-            dist_from_robot = (robot_pos[0]-x)**2 + (robot_pos[1] - y)**2
+            dist_from_robot = (r_x - x)**2 + (r_y - y)**2
             
             if dist_from_robot > RADIUS:
                 r = robot_pos - [x,y]
                 mag = np.power(np.linalg.norm(r),2)
                 F += (q/mag * r)
     return F
+       
+
+def calculate_angle(F,orientation):
+    phi = np.arctan(-F[1]/F[0])
+    print("PHI:",phi)
+    return phi - (orientation + np.pi/2)
     
-# def calculate_step():
-    # V = np.abs(GRID_0 - GRID)
-    # V
+def calculate_speed(angle):
     
+    #Steering right
+    rightSpeed = 0.5 * MAX_SPEED
+    leftSpeed = MAX_SPEED
     
-def calculate_angle(F):
-    return np.arctan(-F[1]/F[0])
-    
+    #Steer left
+    if (angle < -np.pi and angle > -2*np.pi) or (angle > 0 and angle < np.pi):
+        rightSpeed = MAX_SPEED
+        leftSpeed = 0.5 * MAX_SPEED
+        print("Steering Left...")
+
+    return rightSpeed, leftSpeed
 
 # create the Robot instance.
 robot = Robot()
@@ -135,6 +157,9 @@ GRID = init_grid(MAP_X, MAP_Y, CELL_SIZE)
 # Saving copy of initial grid
 GRID_0 = GRID.copy()
 
+V = np.zeros((GRID.shape[0],GRID.shape[1])) + MAX_CHARGE
+# R =  
+
 # Have to enable each distance sensor
 sensors = []
 psNames = [
@@ -157,35 +182,38 @@ leftMotor.setPosition(float('inf'))
 rightMotor.setPosition(float('inf'))
 leftMotor.setVelocity(0.0)
 rightMotor.setVelocity(0.0)
+rightSpeed, leftSpeed = MAX_SPEED, MAX_SPEED
 
 receiver.enable(timestep)
 x_pos, y_pos = [0,0]
 
 
-print(sensors[0].getMinValue())
-print(sensors[0].getMaxValue())
 # Main loop:
 # feedback loop: step simulation until receiving an exit event
 # - perform simulation steps until Webots is stopping the controller
+snapshot_timer = 0
 while robot.step(timestep) != -1:
     # Read the sensors:
 
     psValues = []
     for i in range(8):
-        psValues.append(sensors[i].getValue())
+        psValues.append(
+            convert_to_distance(
+            sensors[i].getValue()
+            ))
     
      # Read position sent by supervisor.
-    
-    print("Queue:",receiver.getQueueLength())
     if receiver.getQueueLength() > 0:
         message = receiver.getData().decode('utf-8')
-        # dataList=struct.unpack("chd",message)
-    
-        print("Current Position: " + message)
         receiver.nextPacket()   
-    
-        x_pos,y_pos = [int(float(x)*100) for x in message.split(",")]
-        print(x_pos,y_pos)
+        
+        message = [float(x) for x in message.split(",")]
+        x_pos,y_pos = [int(x*100) for x in message[:2]]
+        x_pos += GRID.shape[0]/2
+        y_pos += GRID.shape[1]/2
+
+        orientation = message[2]
+        print("Position:{},{} Orientation: {:.4f}".format(x_pos,y_pos, orientation))
         
         ## Update Grid
         update_map(x= x_pos,
@@ -195,40 +223,34 @@ while robot.step(timestep) != -1:
         
         ## Calculate the potential force
         F = calculate_potential(robot_pos=[x_pos,y_pos])
+        print("Force",F)
+        theta = calculate_angle(F, orientation)
         
-        theta = calculate_angle(F)
-        
-        print("Angle of force: {:.5f}".format(theta))
-        
-    # Processing sensor data here
-    # detect obstacles
-    right_obstacle = psValues[0] > 70.0 or psValues[1] > 70.0 or psValues[2] > 70.0
-    
-    print("Distance: {}".format(convert_to_distance(psValues[0])))
-     
+        print("Turning Angle: {:.5f}".format(theta))
 
+        # Modify speeds according to potentials
+        rightSpeed, leftSpeed = calculate_speed(theta)
+
+        # Every hundred timesteps, print a recording of the map
+        if snapshot_timer % (timestep * 10) == 0:
+            # snapshot_timer = 0
+            print_map(snapshot= int(snapshot_timer/10))
+
+
+
+    # Processing sensor data here to detect obstacles
+    obstacle = psValues[0] < 2 or psValues[7] < 2
+    if obstacle:
+        print("OBSTACLE!")
+        rightSpeed, leftSpeed = MAX_SPEED, -MAX_SPEED
+
+    print("Distance: {}".format(psValues[0]))
     
-    print(GRID[x_pos+2,y_pos])
-    
-    left_obstacle = psValues[5] > 70.0 or psValues[6] > 70.0 or psValues[7] > 70.0
-    
-    # initialize motor speeds at 50% of MAX_SPEED.
-    leftSpeed  = 0.5 * MAX_SPEED
-    rightSpeed = 0.5 * MAX_SPEED
-    # modify speeds according to obstacles
-    if left_obstacle:
-        # turn right
-        leftSpeed  += 0.5 * MAX_SPEED
-        rightSpeed -= 0.5 * MAX_SPEED
-    elif right_obstacle:
-        # turn left
-        leftSpeed  -= 0.5 * MAX_SPEED
-        rightSpeed += 0.5 * MAX_SPEED
     # write actuators inputs
-    leftMotor.setVelocity(0)
-    rightMotor.setVelocity(0)
+    leftMotor.setVelocity(leftSpeed)
+    rightMotor.setVelocity(rightSpeed)
     
-    print_map()
+    snapshot_timer += timestep
 
 # Enter here exit cleanup code.
 del robot
