@@ -20,6 +20,8 @@ MAX_VISION = 7
 GRID = None
 MAP_RANGE = [0,500]
 MAX_CHARGE = 127
+CHARGE_INCREMENT = 10
+
 # Distance Map
 DISTANCE = [
           [0, 4095],
@@ -62,8 +64,8 @@ def clip(x, y_axis=False):
 
 def update_map(x,y, sensor_val, quadrant=0):
     
-    # x += 50
-    # y += 50
+    # List of all cells that were updated by robot
+    update_list = []
     
     if quadrant == 0:
       x_min, x_max = x, clip(x + MAX_VISION)
@@ -79,17 +81,18 @@ def update_map(x,y, sensor_val, quadrant=0):
             free_space = dist_from_robot < sensor_val 
 
             if not under_robot and free_space :
-                GRID[i,j] += 10
+                GRID[i,j] += CHARGE_INCREMENT
+                update_list.append("{},{}".format(i,j))
                 # print("FREESPACE:{},{}".format(i,j))
+    return update_list
 
-
-def print_map(name="potential_map.png", snapshot=1):
+def print_map(name="map.png", snapshot=1):
     fig = plt.figure(figsize=(20,20))
     plt.imshow(GRID, cmap="gray", 
                vmin= MAP_RANGE[0], vmax= MAP_RANGE[1])
     plt.colorbar()
     plt.title("Potential Map")
-    plt.savefig("figures_1/{snapshot}_{name}".format(name=name, snapshot=snapshot))
+    plt.savefig("figures/{id}/{snapshot}_{name}".format(id = ID, name=name, snapshot=snapshot))
     plt.close()
 
 
@@ -137,7 +140,7 @@ def calculate_speed(angle):
 
 def parse_message(message):
 
-    message = message.split(",")
+    message = message.split("\t")
     print("{id}: {msg}".format(id=ID, msg=message))
     data = []
     supervisor = False
@@ -152,17 +155,22 @@ def parse_message(message):
         supervisor = True
     else:
         # List of cells that were visited by other robot
-        data = [int(x) for x in message[1:]] 
+        data = [(int(cell[0]),int(cell[1])) for cell in message[1:]] 
     
     return data, supervisor
 
     
+def synchronize(update):
+
+    for (i,j) in update:
+        GRID[i,j] += CHARGE_INCREMENT
 
 
-
-# create the Robot instance.
+# Create the Robot instance.
 robot = Robot()
 
+# Get ID
+ID = int(robot.getName().split("_")[1])
 
 #GETS THE DISPLAY WORKS!
 # disp = robot.getDisplay("display")
@@ -192,7 +200,7 @@ psNames = [
     'ps4', 'ps5', 'ps6', 'ps7'
 ]
 
-# Set the rate at whoch the sensor should be probed
+# Set the rate at which the sensor should be probed
 for i in range(8):
     sensors.append(robot.getDistanceSensor(psNames[i]))
     sensors[i].enable(timestep)
@@ -211,9 +219,9 @@ rightMotor.setVelocity(0.0)
 rightSpeed, leftSpeed = MAX_SPEED, MAX_SPEED
 
 receiver.enable(timestep)
-print(robot.getName())
-ID = int(robot.getName().split("_")[1])
 receiver.setChannel(ID)
+emitter.setChannel(emitter.CHANNEL_BROADCAST)
+
 x_pos, y_pos = [0,0]
 
 
@@ -244,11 +252,20 @@ while robot.step(timestep) != -1:
             print("Position:{},{} Orientation: {:.4f}".format(x_pos,y_pos, orientation))
         
             ## Update Grid
-            update_map(x= x_pos,
-                    y= y_pos,
-                    sensor_val=psValues[0])
-                
-        
+            update_list = update_map(x= x_pos,
+                                     y= y_pos,
+                                     sensor_val=psValues[0])
+            
+            outbound_pkt = "ID_{}:\t".format(ID)
+            outbound_pkt += "\t".join(update_list)
+            print(outbound_pkt)
+
+            # Send updates to other robots 
+            emitter.send(outbound_pkt.encode('utf-8'))
+        else:
+            # Synchronize grid wioth received updates
+            synchronize(data)
+            
         ## Calculate the potential force
         # TODO: If first packet received is not from robot, xpo and ypos are incorrect
         F = calculate_potential(robot_pos=[x_pos,y_pos])
